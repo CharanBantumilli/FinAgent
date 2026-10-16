@@ -1,0 +1,4 @@
+falkordb
+yfinance
+requests
+streamlit
