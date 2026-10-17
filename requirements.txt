@@ -1,4 +1,11 @@
 falkordb
 yfinance
 requests
-streamlit
+fastapi
+uvicorn
+python-dotenv
+langgraph
+langchain
+langchain-core
+langchain-openrouter
+rich
