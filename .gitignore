@@ -221,6 +221,9 @@ __marimo__/
 
 .idea/
 
-test_connection.py
+# project
+.env
+*.local
+
+.env.example
 .gitignore
->>>>>>> upstream/main

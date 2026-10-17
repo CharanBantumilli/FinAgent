@@ -1,72 +1,36 @@
-from falkordb import FalkorDB
+"""Command-line graph X-ray.  Usage: python query_agent.py [TICKER] [TENANT]"""
+import sys
 
-db = FalkorDB(host="localhost", port=6379)
-graph = db.select_graph("fin_company_brain")
-memory_graph = db.select_graph("investor_memory_tenant_1")
+import queries as Q
+from graphdb import DEFAULT_TENANT, company_graph, normalize_tenant, normalize_ticker, tenant_graph
 
 
-def run_explainable_analysis(ticker: str):
-    ticker = ticker.upper()
-    print(f"\n=======================================================")
-    print(f"🕵️ MULTI-HOP GRAPH X-RAY FOR: {ticker}")
-    print(f"=======================================================")
+def run_explainable_analysis(ticker: str, tenant: str = DEFAULT_TENANT):
+    ticker, tenant = normalize_ticker(ticker), normalize_tenant(tenant)
+    graph, memory_graph = company_graph(), tenant_graph(tenant)
+    print(f"\n{'=' * 55}\nMULTI-HOP GRAPH X-RAY FOR: {ticker}  (tenant: {tenant})\n{'=' * 55}")
 
-    # 1. TRACK 1 + TRACK 3 QUERY: Social Catalyst -> Business Unit -> Active 10-Q Decision -> Superseded 10-K
-    q_contagion = """
-    MATCH (cat:SocialCatalyst)-[:IMPACTS_UNIT]->(bu:BusinessUnit)<-[:OPERATES_UNIT]-(c:Company {ticker: $ticker})
-    MATCH (dec:FilingDecision)-[:GOVERNS_UNIT]->(bu)
-    OPTIONAL MATCH (dec)-[:SUPERSEDES]->(old_dec:FilingDecision)
-    RETURN cat.title AS reddit_post,
-           cat.sentiment AS sentiment,
-           bu.name AS impacted_division,
-           dec.id AS active_sec_filing,
-           dec.summary AS filing_guidance,
-           old_dec.id AS superseded_filing
-    LIMIT 5
-    """
-    res = graph.query(q_contagion, {"ticker": ticker})
-    print("\n📌 [Track 1 & 3] Social Catalyst -> Internal Division -> Active SEC Filing Trace:")
-    if not res.result_set:
-        print("  (No social catalysts linked yet.)")
-    for row in res.result_set:
-        print(f"  • [{row[1]}] Reddit: \"{row[0]}\"")
-        print(f"    ↳ Hits Division: {row[2]} | Active Filing: {row[3]} ({row[4]}) | Replaced: {row[5]}")
+    print("\n[Track 1 + 3] Headline -> business unit -> governing filing -> superseded filing:")
+    rows = graph.query(Q.Q_TRACE, {"ticker": ticker}).result_set
+    if not rows:
+        print("  (no catalysts linked yet; run: python ingest_company.py", ticker + ")")
+    for _cid, sent, src, title, unit, dec, old, url in rows:
+        print(f'  [{sent}] ({src}) "{title}"')
+        print(f"    -> {unit} | filing {dec} | replaced {old} | {url or 'no url'}")
 
-    # 2. TRACK 1 QUERY: Supply-Chain Counterparties & Exposed Institutional Shareholders
-    q_exposure = """
-    MATCH (c:Company {ticker: $ticker})-[rel]->(partner:Company)
-    OPTIONAL MATCH (inst:Institution)-[h:HOLDS_SHARES]->(c)
-    WHERE h.invalid_at IS NULL
-    RETURN coalesce(inst.name, 'Public Float / Institutional') AS shareholder,
-           coalesce(h.pct, 0.0) AS stake_pct,
-           type(rel) AS dependency_type,
-           partner.ticker AS counterparty
-    ORDER BY stake_pct DESC
-    LIMIT 6
-    """
-    res_exp = graph.query(q_exposure, {"ticker": ticker})
-    print("\n💸 [Track 1] Shareholder Exposure to Supply-Chain / Partner Links:")
-    for row in res_exp.result_set:
-        print(f"  • {row[0]} ({row[1]}% stake) -> exposed to {ticker} --[{row[2]}]--> {row[3]}")
+    print("\n[Track 1] Shared-shareholder contagion across supply-chain links:")
+    for rel, partner, holder, pct_c, pct_p, _ in graph.query(Q.Q_EXPOSURE, {"ticker": ticker}).result_set:
+        if holder:
+            print(f"  {holder} holds {ticker} ({pct_c}%) and {partner} ({pct_p}%), linked by {rel}")
+        else:
+            print(f"  {ticker} --[{rel}]--> {partner} (no shared institutional holder in graph)")
 
-    # 3. TRACK 2 QUERY: Multi-Agent Task Handoff & Past Session Memory
-    q_memory = """
-    MATCH (u:Investor {id: 'user_demo_01'})-[:HAD_EPISODE]->(ep:Episode {ticker: $ticker})
-    MATCH (ep)-[:SPAWNED_TASK]->(t:AgentTask)-[:DEPENDS_ON]->(prereq:AgentTask)
-    WHERE prereq.status = 'completed'
-    RETURN ep.price_at_check AS price,
-           t.agent AS next_agent,
-           t.status AS task_status,
-           collect(prereq.agent) AS completed_upstream_agents
-    ORDER BY ep.ts DESC
-    LIMIT 1
-    """
-    res_mem = memory_graph.query(q_memory, {"ticker": ticker})
-    print("\n🤖 [Track 2] Multi-Agent Handoff & Persistent Investor Memory:")
-    for row in res_mem.result_set:
-        print(f"  • Remembered {ticker} price snapshot: ${row[0]}")
-        print(f"  • Upstream Agents Done: {row[3]} -> Unlocked Next Agent: {row[1]} ({row[2]})")
+    print("\n[Track 2] Agent handoffs and memory for this tenant:")
+    for ep_ticker, price, _sum, next_agent, status, done in memory_graph.query(Q.Q_MEMORY, {"uid": tenant}).result_set:
+        print(f"  {ep_ticker} @ ${price}: upstream done {done} -> {next_agent} ({status})")
+    for t, q, _ts in memory_graph.query(Q.Q_INTERACTIONS, {"uid": tenant}).result_set:
+        print(f"  asked about {t}: {q}")
 
 
 if __name__ == "__main__":
-    run_explainable_analysis("GOOGL")
+    run_explainable_analysis(sys.argv[1] if len(sys.argv) > 1 else "GOOGL", sys.argv[2] if len(sys.argv) > 2 else DEFAULT_TENANT)
