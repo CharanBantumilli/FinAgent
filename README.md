@@ -1,4 +1,4 @@
-# FinAGENT — Graph-Centred Autonomous Finance OS
+# FinAgent — Graph-Centred Autonomous Finance OS
 
 A multi-agent financial desk where **FalkorDB is the brain**. Real-time
 quotes, multi-hop relationship reasoning, persistent per-tenant agent memory,
